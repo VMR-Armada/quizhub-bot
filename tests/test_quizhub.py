@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from datetime import date
+from pathlib import Path
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -15,6 +16,20 @@ from quizhub.timeutil import today_msk
 from quizhub.web import create_web_app
 
 TODAY = date(2026, 10, 14)  # среда
+
+
+class DotenvTests(unittest.TestCase):
+    def test_utf16_env_file(self) -> None:
+        from quizhub.config import _load_dotenv
+
+        key = "QUIZHUB_DOTENV_TEST"
+        os.environ.pop(key, None)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / ".env"
+            path.write_text(f"{key}=ok\n", encoding="utf-16")
+            _load_dotenv(path)
+        self.assertEqual(os.environ.get(key), "ok")
+        os.environ.pop(key, None)
 
 
 class SearchTests(unittest.TestCase):

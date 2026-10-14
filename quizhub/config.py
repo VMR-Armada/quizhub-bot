@@ -5,10 +5,23 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+def _read_env_text(path: Path) -> str:
+    raw = path.read_bytes()
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16")
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError as error:
+        raise SystemExit(
+            f"Файл {path} сохранён в кодировке, которую бот не читает.\n"
+            "Откройте его в редакторе и сохраните как UTF-8."
+        ) from error
+
+
 def _load_dotenv(path: Path) -> None:
     if not path.exists():
         return
-    for raw in path.read_text(encoding="utf-8").splitlines():
+    for raw in _read_env_text(path).splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -31,14 +44,19 @@ class Settings:
 
 def load_settings() -> Settings:
     root = Path(__file__).resolve().parent.parent
-    _load_dotenv(root / ".env")
+    env_path = root / ".env"
+    if not env_path.exists() and not os.environ.get("BOT_TOKEN", "").strip():
+        raise SystemExit(
+            f"Не найден файл {env_path}.\n"
+            "Скопируйте .env.example в .env и вставьте токен, который выдаёт @BotFather командой /newbot."
+        )
+    _load_dotenv(env_path)
 
     token = os.environ.get("BOT_TOKEN", "").strip()
     if not token or token.startswith("123456:replace"):
         raise SystemExit(
-            "Укажите токен бота в файле .env (BOT_TOKEN).\n"
-            "Его выдаёт @BotFather командой /newbot.\n"
-            "Пример лежит в .env.example."
+            f"В {env_path} всё ещё шаблонный BOT_TOKEN.\n"
+            "Вставьте настоящий токен от @BotFather. Кавычки и пробелы вокруг него не нужны."
         )
 
     admin_ids: set[int] = set()
