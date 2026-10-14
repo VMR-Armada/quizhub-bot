@@ -2,48 +2,6 @@
 
 Телеграм-бот с расписанием барных квизов. Ищет игры по городу, дню и теме, ведёт подписки, принимает объявления «ищу команду / игрока» и показывает таблицу на сайте.
 
-Нужен Python 3.12. Бот написан на [aiogram](https://docs.aiogram.dev/), таблица отдаётся через aiohttp, данные лежат в SQLite.
-
-## Запуск
-
-1. В Telegram откройте [@BotFather](https://t.me/BotFather), команда `/newbot`, скопируйте токен.
-2. Узнайте свой числовой id: его напишет этот бот в ответ на `/help`.
-
-Windows:
-
-```bash
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
-copy .env.example .env
-```
-
-macOS и Linux:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env
-```
-
-В `.env` вставьте токен и свой id:
-
-```
-BOT_TOKEN=123456:токен
-ADMIN_IDS=123456789
-```
-
-Запуск:
-
-```bash
-python bot.py
-```
-
-Бот начнёт принимать сообщения, а таблица откроется на http://127.0.0.1:8080
-
-Файл `.env` и база `data/*.db` в git не попадают. В репозитории лежит только `.env.example` с пустым шаблоном.
-
 ## Как пользоваться
 
 В личке можно писать обычным языком:
@@ -72,12 +30,6 @@ python bot.py
 В группе бот отвечает на команды и на упоминание: `@имя_бота завтра вечером`.
 
 Статусы мест: 🟢 есть, 🟡 мало, 🟠 нет, ⚪ анонс.
-
-## Проверки
-
-```bash
-python -m unittest tests.test_quizhub
-```
 
 ## Лицензия
 
