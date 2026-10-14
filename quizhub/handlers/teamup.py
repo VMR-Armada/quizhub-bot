@@ -31,7 +31,7 @@ def _kind_keyboard(quiz_id: int) -> InlineKeyboardMarkup:
     )
 
 
-@router.message(Command("find"), F.chat.type == "private")
+@router.message(Command("find"))
 @router.callback_query(F.data == "findmenu")
 async def start_find(event: Message | CallbackQuery, state: FSMContext, db: Database) -> None:
     user_id = event.from_user.id

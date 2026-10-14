@@ -47,8 +47,11 @@ def _deny(settings: Settings, user_id: int) -> str | None:
     return "Добавлять квизы может только администратор."
 
 
-@router.message(Command("newquiz"), F.chat.type == "private")
+@router.message(Command("newquiz"))
 async def start_new(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
+    if message.chat.type != "private":
+        await message.answer("Добавлять квизы нужно в личном чате с ботом.")
+        return
     reason = _deny(settings, message.from_user.id)
     if reason:
         await message.answer(reason)

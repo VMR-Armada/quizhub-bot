@@ -35,7 +35,8 @@ HELP = (
     "/find — оставить объявление «ищу команду» или «ищу игрока»\n"
     "/stats — короткая сводка\n"
     "/cancel — прервать текущий шаг\n\n"
-    "В групповом чате бот молчит, пока его не позовут: "
+    "В групповом чате команды работают сразу. "
+    "Обычный поиск без команды бот видит, только если его упомянуть: "
     "<code>@бот завтра вечером</code>.\n"
     "Команда /createschedule вешает в чат расписание на неделю."
 )
@@ -69,7 +70,7 @@ async def show_search(message: Message, db: Database, user: dict, text: str, *, 
         await message.answer(page_text, reply_markup=keyboard)
 
 
-@router.message(CommandStart(), F.chat.type == "private")
+@router.message(CommandStart())
 async def cmd_start(message: Message, db: Database) -> None:
     user = await _remember(message, db)
     city = await db.city_name(user["city_code"]) or "Санкт-Петербург"
@@ -95,7 +96,7 @@ async def cmd_help(message: Message, db: Database, settings: Settings) -> None:
     await message.answer(HELP + extra, reply_markup=main_keyboard())
 
 
-@router.message(Command("city"), F.chat.type == "private")
+@router.message(Command("city"))
 @router.callback_query(F.data == "pickcity")
 async def cmd_city(event: Message | CallbackQuery, db: Database) -> None:
     message = event if isinstance(event, Message) else event.message
@@ -121,7 +122,7 @@ async def set_city(callback: CallbackQuery, db: Database) -> None:
     await callback.message.answer(f"Город: <b>{esc(name)}</b>. Можно сразу писать запрос.", reply_markup=main_keyboard())
 
 
-@router.message(Command("today", "tomorrow"), F.chat.type == "private")
+@router.message(Command("today", "tomorrow"))
 async def cmd_day(message: Message, db: Database) -> None:
     user = await _remember(message, db)
     text = "сегодня" if message.text.startswith("/today") else "завтра"
@@ -154,7 +155,7 @@ async def turn_page(callback: CallbackQuery, db: Database) -> None:
     await callback.message.edit_text(text, reply_markup=keyboard)
 
 
-@router.message(Command("table"), F.chat.type == "private")
+@router.message(Command("table"))
 async def cmd_table(message: Message, db: Database, settings: Settings) -> None:
     user = await _remember(message, db)
     token = await db.get_or_create_table_link(user["telegram_id"], user["city_code"])
@@ -171,7 +172,7 @@ async def cmd_table(message: Message, db: Database, settings: Settings) -> None:
     )
 
 
-@router.message(Command("stats"), F.chat.type == "private")
+@router.message(Command("stats"))
 async def cmd_stats(message: Message, db: Database) -> None:
     user = await _remember(message, db)
     city = await db.city_name(user["city_code"]) or user["city_code"]
