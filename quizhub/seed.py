@@ -209,6 +209,20 @@ def build_demo(start: date | None = None, days: int = 21) -> list[dict]:
     return items
 
 
+async def delete_demo_quizzes(db: Database) -> int:
+    """Убирает учебные игры. Их названия выдуманы и не совпадают с живой афишей."""
+    names = sorted({slot.organizer for slots in SLOTS.values() for slot in slots})
+    if not names:
+        return 0
+    placeholders = ",".join("?" for _ in names)
+    async with db.connect() as connection:
+        cursor = await connection.execute(
+            f"DELETE FROM quizzes WHERE organizer IN ({placeholders})",
+            names,
+        )
+        return int(cursor.rowcount or 0)
+
+
 async def seed_if_empty(db: Database) -> int:
     if await db.count_quizzes():
         return 0

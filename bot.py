@@ -16,7 +16,7 @@ from aiohttp import web
 from quizhub.config import load_settings
 from quizhub.db import Database
 from quizhub.handlers import AppContext, setup_routers
-from quizhub.seed import ensure_horizon, seed_if_empty
+from quizhub.seed import delete_demo_quizzes
 from quizhub.web import create_web_app
 
 log = logging.getLogger("quizhub")
@@ -61,10 +61,9 @@ async def main() -> None:
     settings = load_settings()
     database = Database(settings.db_path)
     await database.init()
-    added = await seed_if_empty(database)
-    added += await ensure_horizon(database)
-    if added:
-        log.info("В каталог добавлены демо-квизы: %s", added)
+    removed = await delete_demo_quizzes(database)
+    if removed:
+        log.info("Убраны учебные квизы, которых нет в живом расписании: %s", removed)
 
     try:
         bot = Bot(settings.bot_token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))

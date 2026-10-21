@@ -11,6 +11,7 @@ from quizhub.format import format_quiz_card
 from quizhub.handlers.common import _remember, cmd_start, show_search
 from quizhub.handlers.middleware import AppContext
 from quizhub.keyboards import quiz_keyboard
+from quizhub.listing import resolve_quiz
 from quizhub.search import parse_search
 from quizhub.timeutil import today_msk
 
@@ -61,12 +62,12 @@ async def unknown_command(message: Message, db: Database) -> None:
 
 @router.callback_query(F.data.startswith("quiz:"))
 async def open_quiz(callback: CallbackQuery, db: Database) -> None:
-    quiz_id = int(callback.data.split(":", 1)[1])
-    quiz = await db.get_quiz(quiz_id)
+    raw_id = callback.data.split(":", 1)[1]
+    quiz = await resolve_quiz(db, callback.from_user.id, raw_id)
     if quiz is None:
         await callback.answer("Квиз уже не в каталоге", show_alert=True)
         return
     city = await db.city_name(quiz["city_code"]) or quiz["city_code"]
-    posts = await db.team_posts(quiz_id)
+    posts = await db.team_posts(quiz["id"])
     await callback.answer()
     await callback.message.answer(format_quiz_card(quiz, city, posts), reply_markup=quiz_keyboard(quiz))

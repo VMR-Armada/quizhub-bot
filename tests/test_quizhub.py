@@ -5,11 +5,13 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
 from quizhub.db import Database
 from quizhub.listing import collect
+from quizhub.live import ScheduleUnavailable, quizzes_from_payload
 from quizhub.search import matches, parse_search
 from quizhub.seed import build_demo, seed_if_empty
 from quizhub.timeutil import today_msk
@@ -87,6 +89,42 @@ class SearchTests(unittest.TestCase):
             covered = {date.fromisoformat(row["starts_at"][:10]).weekday() for row in rows if row["city_code"] == city}
             self.assertEqual(covered, set(range(7)), city)
 
+    def test_public_schedule_keeps_wall_clock(self) -> None:
+        rows = quizzes_from_payload(
+            {
+                "success": True,
+                "data": {
+                    "table": {
+                        "БелкинКвиз": {
+                            "2026-10-21": {
+                                "eveningQuizzes": [
+                                    {
+                                        "ID": "bjpnh",
+                                        "Название": "№3.4 (33)",
+                                        "Дата": "2026-10-21T19:30:00.000Z",
+                                        "Место": "Фасоль",
+                                        "Организатор": "БелкинКвиз",
+                                        "Стоимость": 600,
+                                        "Максимум в команде": 10,
+                                        "Ссылка": "https://vk.com/belkinquizspb",
+                                        "Теги": ["кино", "музыка"],
+                                        "Внешний статус": "🟢",
+                                    }
+                                ]
+                            }
+                        }
+                    }
+                },
+            },
+            "spb",
+        )
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["id"], "bjpnh")
+        self.assertEqual(rows[0]["starts_at"], "2026-10-21 19:30")
+        self.assertEqual(rows[0]["price"], "600 ₽")
+        self.assertEqual(rows[0]["tags"], "кино, музыка")
+        self.assertNotEqual(rows[0]["organizer"], "Мелодия")
+
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -95,26 +133,39 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         await self.db.init()
         added = await seed_if_empty(self.db)
         self.assertGreater(added, 0)
+        self.schedule_patch = patch(
+            "quizhub.web.fetch_schedule",
+            new_callable=AsyncMock,
+            side_effect=ScheduleUnavailable(),
+        )
+        self.schedule_patch.start()
 
     async def asyncTearDown(self) -> None:
+        self.schedule_patch.stop()
         self.tmp.cleanup()
 
     async def test_today_search_in_spb(self) -> None:
         today = today_msk()
-        parsed, city, found = await collect(self.db, "сегодня", "spb", today)
+        parsed, city, found = await collect(
+            self.db, "сегодня", "spb", today, source=self.db.quizzes_between
+        )
         self.assertEqual(city, "spb")
         self.assertEqual(parsed.date_from, today)
         self.assertTrue(found)
         self.assertTrue(all(row["starts_at"].startswith(today.isoformat()) for row in found))
 
     async def test_unknown_topic_still_shows_the_day(self) -> None:
-        parsed, _, found = await collect(self.db, "абракадабра сегодня", "spb", today_msk())
+        parsed, _, found = await collect(
+            self.db, "абракадабра сегодня", "spb", today_msk(), source=self.db.quizzes_between
+        )
         self.assertTrue(parsed.relaxed)
         self.assertTrue(found)
         self.assertTrue(all("абракадабра" not in row["title"].lower() for row in found))
 
     async def test_team_post_and_personal_filter(self) -> None:
-        _, _, found = await collect(self.db, "сегодня", "spb", today_msk())
+        _, _, found = await collect(
+            self.db, "сегодня", "spb", today_msk(), source=self.db.quizzes_between
+        )
         quiz_id = found[0]["id"]
         await self.db.add_team_post(
             quiz_id=quiz_id,
@@ -161,6 +212,34 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Северный квиз", text)
             missing = await client.get("/dashboard/nope")
             self.assertEqual(missing.status, 404)
+
+    async def test_today_uses_supplied_schedule_not_demo(self) -> None:
+        today = today_msk()
+
+        async def source(city: str, start: date, days: int) -> list[dict]:
+            self.assertEqual(city, "spb")
+            self.assertEqual(start, today)
+            self.assertEqual(days, 1)
+            return [
+                {
+                    "id": "bjpnh",
+                    "city_code": city,
+                    "organizer": "БелкинКвиз",
+                    "title": "№3.4 (33)",
+                    "starts_at": f"{today.isoformat()} 19:30",
+                    "place": "Фасоль",
+                    "price": "600 ₽",
+                    "max_team": 10,
+                    "description": "",
+                    "url": "https://vk.com/belkinquizspb",
+                    "status": "open",
+                    "tags": "",
+                }
+            ]
+
+        _, _, found = await collect(self.db, "сегодня", "spb", today, source=source)
+        self.assertEqual([row["title"] for row in found], ["№3.4 (33)"])
+        self.assertTrue(all(row["organizer"] != "Мелодия" for row in found))
 
     async def test_seed_is_not_duplicated(self) -> None:
         again = await seed_if_empty(self.db)

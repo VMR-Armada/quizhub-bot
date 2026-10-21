@@ -9,7 +9,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 from quizhub.db import Database
 from quizhub.format import esc
 from quizhub.handlers.common import _remember
-from quizhub.listing import PAGE_SIZE
+from quizhub.listing import PAGE_SIZE, resolve_quiz
 
 router = Router()
 
@@ -63,7 +63,8 @@ async def pick_number(message: Message, state: FSMContext, db: Database) -> None
     if not raw.isdigit() or not 1 <= int(raw) <= len(chunk):
         await message.answer(f"Нужна цифра от 1 до {len(chunk)}.")
         return
-    quiz = await db.get_quiz(chunk[int(raw) - 1])
+    item = chunk[int(raw) - 1]
+    quiz = item if isinstance(item, dict) else await resolve_quiz(db, message.from_user.id, str(item))
     await state.clear()
     if quiz is None:
         await message.answer("Этот квиз уже не в каталоге.")
@@ -77,7 +78,7 @@ async def choose_kind(callback: CallbackQuery, state: FSMContext, db: Database) 
     if kind not in {"player", "team"}:
         await callback.answer()
         return
-    quiz = await db.get_quiz(int(raw_id))
+    quiz = await resolve_quiz(db, callback.from_user.id, raw_id)
     if quiz is None:
         await callback.answer("Квиз не найден", show_alert=True)
         return
@@ -113,7 +114,7 @@ async def got_note(message: Message, state: FSMContext, db: Database) -> None:
     data = await state.get_data()
     user = await _remember(message, db)
     await db.add_team_post(
-        quiz_id=int(data["quiz_id"]),
+        quiz_id=data["quiz_id"],
         telegram_id=user["telegram_id"],
         kind=data["kind"],
         name=data["name"],

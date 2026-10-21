@@ -410,9 +410,13 @@ class Database:
                 """,
                 quiz_ids,
             )
-            result: dict[int, dict[str, int]] = {}
+            result: dict[int | str, dict[str, int]] = {}
             for row in await cursor.fetchall():
-                bucket = result.setdefault(int(row["quiz_id"]), {"team": 0, "player": 0})
+                key: int | str = row["quiz_id"]
+                if not isinstance(key, int):
+                    text = str(key)
+                    key = int(text) if text.isdigit() else text
+                bucket = result.setdefault(key, {"team": 0, "player": 0})
                 bucket[str(row["kind"])] = int(row["n"])
             return result
 

@@ -7,6 +7,7 @@ from aiohttp import web
 
 from quizhub.db import Database
 from quizhub.format import MONTHS, WEEKDAY_SHORT, status_icon
+from quizhub.live import ScheduleUnavailable, fetch_schedule
 from quizhub.timeutil import EVENING_HOUR, parse_stored, today_msk
 
 TABLE_DAYS = 21
@@ -31,6 +32,13 @@ async def health(_: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+async def _schedule(db: Database, city: str, start, days: int) -> list[dict]:
+    try:
+        return await fetch_schedule(city, start, days)
+    except ScheduleUnavailable:
+        return await db.quizzes_between(city, start, days)
+
+
 async def home(request: web.Request) -> web.Response:
     db: Database = request.app[DB_KEY]
     cities = await db.cities()
@@ -53,7 +61,7 @@ async def dashboard(request: web.Request) -> web.Response:
     if name is None:
         raise web.HTTPNotFound(text="Такого города нет")
     start = today_msk()
-    quizzes = await db.quizzes_between(city, start, TABLE_DAYS)
+    quizzes = await _schedule(db, city, start, TABLE_DAYS)
     body = _table_block(name, quizzes, filter_form=None)
     return _page(f"Расписание — {name}", body)
 
@@ -65,9 +73,9 @@ async def personal(request: web.Request) -> web.Response:
         raise web.HTTPNotFound(text="Ссылка на таблицу не найдена")
     name = await db.city_name(link["city_code"]) or link["city_code"]
     start = today_msk()
-    quizzes = await db.quizzes_between(link["city_code"], start, TABLE_DAYS)
+    quizzes = await _schedule(db, link["city_code"], start, TABLE_DAYS)
+    organizers = sorted({row["organizer"] for row in quizzes}, key=str.casefold)
     quizzes = _apply_filter(quizzes, link["filter_mode"], link["organizers"])
-    organizers = await db.organizers(link["city_code"], start, TABLE_DAYS)
     form = _filter_form(request.match_info["token"], organizers, link["filter_mode"], set(link["organizers"]))
     body = _table_block(name, quizzes, filter_form=form)
     return _page(f"Моя таблица — {name}", body)
@@ -207,12 +215,21 @@ def _table_block(city_name: str, quizzes: list[dict], filter_form: str | None) -
     """
 
 
+def _quiz_href(quiz: dict) -> str:
+    if str(quiz.get("id")).isdigit():
+        return f"/quiz/{quiz['id']}"
+    url = str(quiz.get("url") or "")
+    if url.startswith(("http://", "https://")):
+        return html.escape(url, quote=True)
+    return "#"
+
+
 def _cell(quizzes: list[dict]) -> str:
     chunks = []
     for quiz in quizzes:
         moment = parse_stored(quiz["starts_at"])
         chunks.append(
-            f'<a class="quiz" href="/quiz/{quiz["id"]}">'
+            f'<a class="quiz" href="{_quiz_href(quiz)}">'
             f'{status_icon(quiz["status"])} {html.escape(quiz["title"])}'
             f'<small>{moment.strftime("%H:%M")} · {html.escape(quiz["place"])}</small></a>'
         )

@@ -7,6 +7,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMar
 
 from quizhub.db import Database
 from quizhub.format import esc, format_day_label, status_icon
+from quizhub.live import ScheduleUnavailable, fetch_schedule
 from quizhub.search import CITY_ALIASES
 from quizhub.textutil import normalize
 from quizhub.timeutil import parse_stored, today_msk
@@ -56,9 +57,19 @@ def _refresh_markup() -> InlineKeyboardMarkup:
     )
 
 
+async def _week(city_code: str) -> list[dict] | None:
+    try:
+        return await fetch_schedule(city_code, today_msk(), 7)
+    except ScheduleUnavailable:
+        return None
+
+
 async def _publish(message: Message, db: Database, city_code: str) -> None:
     city_name = await db.city_name(city_code) or city_code
-    quizzes = await db.quizzes_between(city_code, today_msk(), 7)
+    quizzes = await _week(city_code)
+    if quizzes is None:
+        await message.answer("Сейчас не получается получить расписание. Попробуйте ещё раз через минуту.")
+        return
     text = week_text(city_name, quizzes)
     markup = _refresh_markup()
     existing = await db.chat_schedule(message.chat.id)
@@ -112,7 +123,10 @@ async def refresh_schedule(callback: CallbackQuery, db: Database) -> None:
         await callback.answer("Расписание в этом чате ещё не создавали", show_alert=True)
         return
     city_name = await db.city_name(existing["city_code"]) or existing["city_code"]
-    quizzes = await db.quizzes_between(existing["city_code"], today_msk(), 7)
+    quizzes = await _week(existing["city_code"])
+    if quizzes is None:
+        await callback.answer("Сейчас не получается получить расписание", show_alert=True)
+        return
     try:
         await callback.message.edit_text(week_text(city_name, quizzes), reply_markup=_refresh_markup())
     except TelegramBadRequest:

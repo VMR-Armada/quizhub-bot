@@ -10,6 +10,7 @@ from quizhub.db import Database
 from quizhub.format import esc
 from quizhub.keyboards import cities_keyboard, main_keyboard
 from quizhub.listing import collect, describe, render_results
+from quizhub.live import ScheduleUnavailable
 from quizhub.search import SearchQuery
 from quizhub.textutil import plural_quizzes
 from quizhub.timeutil import today_msk
@@ -53,7 +54,11 @@ async def _remember(message: Message, db: Database) -> dict:
 
 
 async def show_search(message: Message, db: Database, user: dict, text: str, *, edit: bool = False) -> None:
-    parsed, city, found = await collect(db, text, user["city_code"], today_msk())
+    try:
+        parsed, city, found = await collect(db, text, user["city_code"], today_msk())
+    except ScheduleUnavailable:
+        await message.answer("Сейчас не получается получить расписание. Попробуйте ещё раз через минуту.")
+        return
     if parsed.relaxed:
         when = describe(
             SearchQuery(date_from=parsed.date_from, date_to=parsed.date_to, part=parsed.part),
@@ -64,12 +69,12 @@ async def show_search(message: Message, db: Database, user: dict, text: str, *, 
         subtitle = describe(parsed, text)
     if parsed.city_code and parsed.city_code != user["city_code"]:
         subtitle = "город из запроса · " + subtitle
-    await db.save_search(user["telegram_id"], subtitle, city, [row["id"] for row in found])
+    await db.save_search(user["telegram_id"], subtitle, city, found)
     page_text, keyboard = await render_results(
         db,
         city_code=city,
         subtitle=subtitle,
-        quiz_ids=[row["id"] for row in found],
+        quiz_ids=found,
         page=0,
     )
     if edit:
@@ -186,7 +191,11 @@ async def cmd_table(message: Message, db: Database, settings: Settings) -> None:
 async def cmd_stats(message: Message, db: Database) -> None:
     user = await _remember(message, db)
     city = await db.city_name(user["city_code"]) or user["city_code"]
-    _, _, found = await collect(db, "", user["city_code"], today_msk())
+    try:
+        _, _, found = await collect(db, "", user["city_code"], today_msk())
+    except ScheduleUnavailable:
+        await message.answer("Сейчас не получается получить расписание. Попробуйте ещё раз через минуту.")
+        return
     subs = await db.subscriptions(user["telegram_id"])
     posts = await db.count_team_posts(user["telegram_id"])
     await message.answer(
