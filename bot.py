@@ -16,7 +16,7 @@ from aiohttp import web
 from quizhub.config import load_settings
 from quizhub.db import Database
 from quizhub.handlers import AppContext, setup_routers
-from quizhub.seed import seed_if_empty
+from quizhub.seed import ensure_horizon, seed_if_empty
 from quizhub.web import create_web_app
 
 log = logging.getLogger("quizhub")
@@ -62,6 +62,7 @@ async def main() -> None:
     database = Database(settings.db_path)
     await database.init()
     added = await seed_if_empty(database)
+    added += await ensure_horizon(database)
     if added:
         log.info("В каталог добавлены демо-квизы: %s", added)
 

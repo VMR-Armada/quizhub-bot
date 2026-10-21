@@ -25,6 +25,14 @@ async def collect(db: Database, text: str, user_city: str, today=None) -> tuple[
         days = 21
     rows = await db.quizzes_between(city, start, days)
     found = [row for row in rows if matches(row, parsed)]
+    if not found and parsed.tokens:
+        relaxed = SearchQuery(
+            date_from=parsed.date_from,
+            date_to=parsed.date_to,
+            part=parsed.part,
+        )
+        found = [row for row in rows if matches(row, relaxed)]
+        parsed.relaxed = bool(found)
     found.sort(key=lambda row: (row["starts_at"], row["organizer"], row["title"]))
     return parsed, city, found[:MAX_RESULTS]
 

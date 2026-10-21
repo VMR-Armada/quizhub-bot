@@ -72,8 +72,9 @@ def short_day(moment: datetime) -> str:
 def format_quiz_line(index: int, quiz: dict, counts: dict[str, int] | None = None) -> str:
     moment = parse_stored(quiz["starts_at"])
     lines = [
-        f"<b>{index}. {status_icon(quiz['status'])} {moment.strftime('%H:%M')} · {esc(quiz['title'])}</b>",
-        f"{esc(quiz['organizer'])} · {esc(quiz['place'])}",
+        f"<b>{index}. {status_icon(quiz['status'])} {short_day(moment)} {moment.strftime('%H:%M')} · {esc(quiz['title'])}</b>",
+        f"{esc(quiz['organizer'])} · {esc(quiz['place'])}"
+        + (f" · {esc(quiz['price'])}" if quiz.get("price") else ""),
     ]
     if counts and (counts.get("team") or counts.get("player")):
         bits = []

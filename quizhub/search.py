@@ -55,6 +55,47 @@ PART_WORDS = {
 
 _DATE = re.compile(r"\b(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\b")
 
+# Служебные слова запроса. «игра» не входит: иначе пропадёт «игра престолов».
+FILLER = {
+    "на",
+    "в",
+    "во",
+    "по",
+    "квиз",
+    "квизы",
+    "квиза",
+    "игры",
+    "какие",
+    "какой",
+    "какое",
+    "какая",
+    "что",
+    "чем",
+    "это",
+    "есть",
+    "будет",
+    "будут",
+    "расписание",
+    "афиша",
+    "покажи",
+    "показать",
+    "найти",
+    "найди",
+    "хочу",
+    "можно",
+    "где",
+    "когда",
+    "все",
+    "ближайшие",
+    "ближайший",
+    "мне",
+    "нам",
+    "пожалуйста",
+    "список",
+    "сегодняшние",
+    "завтрашние",
+}
+
 
 @dataclass
 class SearchQuery:
@@ -63,6 +104,7 @@ class SearchQuery:
     date_to: date | None = None
     part: str | None = None
     city_code: str | None = None
+    relaxed: bool = False
 
     @property
     def is_open(self) -> bool:
@@ -135,7 +177,7 @@ def parse_search(text: str, today: date | None = None) -> SearchQuery:
         if token in PART_WORDS and query.part is None:
             query.part = PART_WORDS[token]
             continue
-        if token in {"на", "в", "во", "по", "квиз", "квизы"}:
+        if token in FILLER:
             continue
         kept.append(token)
 

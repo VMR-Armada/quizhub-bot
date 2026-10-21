@@ -10,6 +10,7 @@ from quizhub.db import Database
 from quizhub.format import esc
 from quizhub.keyboards import cities_keyboard, main_keyboard
 from quizhub.listing import collect, describe, render_results
+from quizhub.search import SearchQuery
 from quizhub.textutil import plural_quizzes
 from quizhub.timeutil import today_msk
 
@@ -53,7 +54,14 @@ async def _remember(message: Message, db: Database) -> dict:
 
 async def show_search(message: Message, db: Database, user: dict, text: str, *, edit: bool = False) -> None:
     parsed, city, found = await collect(db, text, user["city_code"], today_msk())
-    subtitle = describe(parsed, text)
+    if parsed.relaxed:
+        when = describe(
+            SearchQuery(date_from=parsed.date_from, date_to=parsed.date_to, part=parsed.part),
+            "",
+        )
+        subtitle = f"по «{' '.join(parsed.tokens)}» ничего нет · {when}"
+    else:
+        subtitle = describe(parsed, text)
     if parsed.city_code and parsed.city_code != user["city_code"]:
         subtitle = "город из запроса · " + subtitle
     await db.save_search(user["telegram_id"], subtitle, city, [row["id"] for row in found])
@@ -78,9 +86,11 @@ async def cmd_start(message: Message, db: Database) -> None:
         f"Привет, {esc(message.from_user.first_name)}.\n"
         "Я QuizHub: расписание барных квизов, подписки на темы и поиск команды.\n\n"
         f"Сейчас город: <b>{esc(city)}</b>.\n"
-        "Напишите, например, <b>завтра вечером музыка</b> — или нажмите кнопку.",
+        "Напишите, например, <b>завтра вечером музыка</b> — или нажмите кнопку.\n"
+        "Ниже квизы на сегодня.",
         reply_markup=main_keyboard(),
     )
+    await show_search(message, db, user, "сегодня")
 
 
 @router.message(Command("help"))

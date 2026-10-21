@@ -215,6 +215,26 @@ class Database:
             )
             return int(cursor.lastrowid)
 
+    async def count_from(self, start: date) -> int:
+        begin, _ = shift_days(start, 1)
+        async with self.connect() as db:
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS n FROM quizzes WHERE starts_at >= ?",
+                (begin,),
+            )
+            return int((await cursor.fetchone())["n"])
+
+    async def quiz_exists(self, city_code: str, organizer: str, title: str, starts_at: str) -> bool:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT 1 FROM quizzes
+                WHERE city_code = ? AND organizer = ? AND title = ? AND starts_at = ?
+                """,
+                (city_code, organizer, title, starts_at),
+            )
+            return await cursor.fetchone() is not None
+
     async def quizzes_between(self, city_code: str, start: date, days: int) -> list[dict]:
         begin, end = shift_days(start, days)
         async with self.connect() as db:

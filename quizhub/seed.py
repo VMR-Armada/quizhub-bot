@@ -212,7 +212,22 @@ def build_demo(start: date | None = None, days: int = 21) -> list[dict]:
 async def seed_if_empty(db: Database) -> int:
     if await db.count_quizzes():
         return 0
-    rows = build_demo()
+    return await _insert_demo(db, build_demo())
+
+
+async def ensure_horizon(db: Database, days: int = 21) -> int:
+    """Дописывает демо-игры, если впереди почти пусто. Уже прошедшие даты сами не показываются."""
+    if await db.count_from(today_msk()) >= 8:
+        return 0
+    rows = []
+    for row in build_demo(today_msk(), days):
+        exists = await db.quiz_exists(row["city_code"], row["organizer"], row["title"], row["starts_at"])
+        if not exists:
+            rows.append(row)
+    return await _insert_demo(db, rows)
+
+
+async def _insert_demo(db: Database, rows: list[dict]) -> int:
     for row in rows:
         await db.add_quiz(**row)
     return len(rows)

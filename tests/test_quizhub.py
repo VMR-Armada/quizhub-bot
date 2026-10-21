@@ -33,6 +33,11 @@ class DotenvTests(unittest.TestCase):
 
 
 class SearchTests(unittest.TestCase):
+    def test_plain_question_means_the_whole_day(self) -> None:
+        parsed = parse_search("какие квизы сегодня", TODAY)
+        self.assertEqual(parsed.date_from, TODAY)
+        self.assertEqual(parsed.tokens, [])
+
     def test_tomorrow_evening_music(self) -> None:
         parsed = parse_search("завтра вечером музыка", TODAY)
         self.assertEqual(parsed.date_from, date(2026, 10, 15))
@@ -102,8 +107,14 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(found)
         self.assertTrue(all(row["starts_at"].startswith(today.isoformat()) for row in found))
 
+    async def test_unknown_topic_still_shows_the_day(self) -> None:
+        parsed, _, found = await collect(self.db, "абракадабра сегодня", "spb", today_msk())
+        self.assertTrue(parsed.relaxed)
+        self.assertTrue(found)
+        self.assertTrue(all("абракадабра" not in row["title"].lower() for row in found))
+
     async def test_team_post_and_personal_filter(self) -> None:
-        _, _, found = await collect(self.db, "сегодня", "spb", TODAY)
+        _, _, found = await collect(self.db, "сегодня", "spb", today_msk())
         quiz_id = found[0]["id"]
         await self.db.add_team_post(
             quiz_id=quiz_id,
