@@ -5,8 +5,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-_URL = re.compile(r"\s*\(https?://[^)]*\)")
+_URL = re.compile(r"\s*(?:\(https?://[^)]*\)|https?://\S+)")
 _PRICE = re.compile(r"💰\s*(.+)$")
+_TIME = re.compile(r"\d{1,2}:\d{2}")
+_MONTH = re.compile(r"(янв|фев|мар|апр|мая|май|июн|июл|авг|сен|окт|ноя|дек)", re.IGNORECASE)
 _HEADER = "появились новые квизы"
 
 _ORGANIZER = ("👥", "👤")
@@ -35,34 +37,36 @@ class QuizNotice:
 def parse_notices(text: str) -> list[QuizNotice]:
     """Разбирает одно или несколько объявлений из сообщения подписки."""
     notices: list[QuizNotice] = []
-    current: QuizNotice | None = None
+    current = QuizNotice()
+
+    def flush() -> None:
+        nonlocal current
+        if current.useful:
+            notices.append(current)
+        current = QuizNotice()
+
     for line in _lines(text):
         kind, payload = _classify(line)
-        if kind == "organizer":
-            if current is not None and current.useful:
-                notices.append(current)
-            current = QuizNotice(organizer=payload)
+        if not payload:
             continue
-        if current is None:
-            current = QuizNotice()
-        if kind == "title":
+        if kind == "other":
+            kind = _guess(current, payload)
+        if kind == "organizer" and (current.title or current.when or current.place):
+            flush()
+        if kind == "organizer":
+            current.organizer = payload
+        elif kind == "title":
             if current.title:
-                if current.useful:
-                    notices.append(current)
-                current = QuizNotice(title=payload)
-            else:
-                current.title = payload
+                flush()
+            current.title = payload
         elif kind == "when":
-            current.when, current.price = _split_when_price(payload)
+            current.when, price = _split_when_price(payload)
+            if price:
+                current.price = price
         elif kind == "place":
             current.place = payload
-            if current.useful:
-                notices.append(current)
-            current = None
-        elif not current.title:
-            current.title = payload
-    if current is not None and current.useful:
-        notices.append(current)
+            flush()
+    flush()
     return notices
 
 
@@ -98,23 +102,44 @@ def _lines(text: str) -> list[str]:
 
 
 def _classify(line: str) -> tuple[str, str]:
-    if line.startswith(_ORGANIZER):
-        return "organizer", _strip_mark(line)
-    if line.startswith(_TITLE):
-        return "title", _strip_mark(line)
-    if line.startswith(_WHEN):
-        return "when", _strip_mark(line)
-    if line.startswith(_PLACE):
-        return "place", _strip_mark(line)
-    return "other", line.strip()
+    mark, payload = _peel_mark(line)
+    if mark in _ORGANIZER:
+        return "organizer", payload
+    if mark in _TITLE:
+        return "title", payload
+    if mark in _WHEN:
+        return "when", payload
+    if mark in _PLACE:
+        return "place", payload
+    if _looks_when(payload):
+        return "when", payload
+    return "other", payload
 
 
-def _strip_mark(line: str) -> str:
+def _guess(current: QuizNotice, payload: str) -> str:
+    if _looks_when(payload):
+        return "when"
+    if not current.organizer and not current.title:
+        return "organizer"
+    if not current.title:
+        return "title"
+    if not current.when:
+        return "when"
+    if not current.place:
+        return "place"
+    return "organizer"
+
+
+def _looks_when(text: str) -> bool:
+    return "💰" in text or _TIME.search(text) is not None or _MONTH.search(text) is not None
+
+
+def _peel_mark(line: str) -> tuple[str, str]:
     text = line.strip()
-    for mark in _MARKS:
+    for mark in sorted(_MARKS, key=len, reverse=True):
         if text.startswith(mark):
-            return text[len(mark) :].strip()
-    return text
+            return mark, text[len(mark) :].strip(" \uFE0F")
+    return "", text
 
 
 def _split_when_price(text: str) -> tuple[str, str]:

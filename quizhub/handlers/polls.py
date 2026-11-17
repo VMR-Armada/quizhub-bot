@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from aiogram import Router
+from aiogram import F, Router
+from aiogram.dispatcher.event.bases import SkipHandler
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyParameters
@@ -12,35 +13,77 @@ router = Router()
 _MAX_POLLS = 10
 
 
+def _message_text(message: Message | None) -> str:
+    if message is None:
+        return ""
+    return message.text or message.caption or ""
+
+
 def _announcement_text(message: Message) -> str:
-    origin = message.reply_to_message
-    if origin is not None and (origin.text or origin.caption):
-        return origin.text or origin.caption or ""
-    body = message.text or message.caption or ""
+    """Берёт текст объявления из ответа, цитаты или хвоста команды.
+
+    У пересланного сообщения полный текст иногда есть только в цитате ответа.
+    """
+    candidates = [
+        _message_text(message.reply_to_message),
+        message.quote.text if message.quote is not None else "",
+    ]
+    body = _message_text(message)
     parts = body.split(maxsplit=1)
-    if parts and parts[0].split("@", 1)[0] == "/poll":
-        return parts[1] if len(parts) > 1 else ""
-    return body
+    command = parts[0].split("@", 1)[0].casefold() if parts else ""
+    if command == "/poll":
+        if len(parts) > 1:
+            candidates.append(parts[1])
+    elif body:
+        candidates.append(body)
+    best = ""
+    best_count = -1
+    for candidate in candidates:
+        if not candidate.strip():
+            continue
+        count = len(parse_notices(candidate))
+        if count > best_count or (count == best_count and len(candidate) > len(best)):
+            best = candidate
+            best_count = count
+    return best
 
 
 @router.message(Command("poll"))
 async def cmd_poll(message: Message) -> None:
     text = _announcement_text(message)
-    if not text.strip():
+    notices = parse_notices(text) if text.strip() else []
+    if not notices:
+        if message.reply_to_message is not None or message.quote is not None:
+            await message.answer(
+                "Не вижу текст этого сообщения. Перешлите объявление боту в личные сообщения "
+                "или вставьте его сразу после команды /poll."
+            )
+            return
         await message.answer(
             "Ответьте командой /poll на объявление о квизе "
             "или пришлите его текст сразу после команды."
         )
         return
-    notices = parse_notices(text)
+    await _publish(message, notices)
+
+
+@router.message(F.forward_origin)
+async def forwarded_notice(message: Message) -> None:
+    if message.chat.type != "private":
+        raise SkipHandler()
+    notices = parse_notices(_message_text(message))
     if not notices:
-        await message.answer(
-            "Не разобрал квиз в этом сообщении. "
-            "Нужны строки с организатором, названием, датой и местом."
-        )
-        return
-    origin = message.reply_to_message
-    reply = ReplyParameters(message_id=origin.message_id) if origin is not None else None
+        raise SkipHandler()
+    await _publish(message, notices, reply_to=message)
+
+
+async def _publish(message: Message, notices: list, *, reply_to: Message | None = None) -> None:
+    origin = reply_to if reply_to is not None else message.reply_to_message
+    reply = (
+        ReplyParameters(message_id=origin.message_id, allow_sending_without_reply=True)
+        if origin is not None
+        else None
+    )
     anonymous = message.chat.type == "private"
     sent = 0
     for notice in notices[:_MAX_POLLS]:
@@ -57,26 +100,23 @@ async def cmd_poll(message: Message) -> None:
 
 
 async def _send_poll(message: Message, question: str, *, anonymous: bool, reply: ReplyParameters | None) -> bool:
-    try:
-        await message.answer_poll(
-            question,
-            list(OPTIONS),
-            is_anonymous=anonymous,
-            allows_multiple_answers=False,
-            reply_parameters=reply,
-        )
-        return True
-    except TelegramBadRequest:
-        if anonymous:
-            return False
-    try:
-        await message.answer_poll(
-            question,
-            list(OPTIONS),
-            is_anonymous=True,
-            allows_multiple_answers=False,
-            reply_parameters=reply,
-        )
-        return True
-    except TelegramBadRequest:
-        return False
+    attempts: list[tuple[bool, ReplyParameters | None]] = []
+    if not anonymous:
+        attempts.append((False, reply))
+    attempts.append((True, reply))
+    if reply is not None:
+        attempts.append((True, None))
+    for poll_anonymous, poll_reply in attempts:
+        try:
+            await message.answer_poll(
+                question,
+                list(OPTIONS),
+                is_anonymous=poll_anonymous,
+                allows_multiple_answers=False,
+                question_parse_mode=None,
+                reply_parameters=poll_reply,
+            )
+            return True
+        except TelegramBadRequest:
+            continue
+    return False

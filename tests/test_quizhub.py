@@ -169,6 +169,17 @@ class PollTests(unittest.TestCase):
         self.assertEqual(notices[0].price, "")
         self.assertIn("Фасоль", poll_question(notices[0]))
 
+    def test_forward_without_emoji_marks(self) -> None:
+        notices = parse_notices(
+            "Квиз, плиз!\n[видеоигры] SPB #14\nСб, 28 ноя. 19:30 💰700\nСоус"
+        )
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0].organizer, "Квиз, плиз!")
+        self.assertEqual(notices[0].title, "[видеоигры] SPB #14")
+        self.assertEqual(notices[0].when, "Сб, 28 ноя. 19:30")
+        self.assertEqual(notices[0].place, "Соус")
+        self.assertEqual(notices[0].price, "700")
+
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
