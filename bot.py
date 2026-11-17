@@ -49,6 +49,7 @@ COMMANDS = [
     BotCommand(command="sub", description="Подписки на темы"),
     BotCommand(command="table", description="Таблица расписания"),
     BotCommand(command="find", description="Найти команду или игрока"),
+    BotCommand(command="poll", description="Опрос: кто идёт на квиз"),
     BotCommand(command="createschedule", description="Расписание в чат на неделю"),
     BotCommand(command="stats", description="Короткая сводка"),
     BotCommand(command="help", description="Как пользоваться"),

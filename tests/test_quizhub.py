@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from quizhub.db import Database
 from quizhub.listing import collect
 from quizhub.live import ScheduleUnavailable, quizzes_from_payload
+from quizhub.polls import parse_notices, poll_question
 from quizhub.search import matches, parse_search
 from quizhub.seed import build_demo, seed_if_empty
 from quizhub.timeutil import today_msk
@@ -124,6 +125,49 @@ class SearchTests(unittest.TestCase):
         self.assertEqual(rows[0]["price"], "600 ₽")
         self.assertEqual(rows[0]["tags"], "кино, музыка")
         self.assertNotEqual(rows[0]["organizer"], "Мелодия")
+
+
+SAMPLE = """Появились новые квизы по вашим подпискам:
+
+👥 Квиз, плиз! (https://spb.quizplease.ru/game/01a1e361-6a9a-71a8-9a36-90319557081d)
+🟢 [видеоигры] SPB #14
+🗓 (https://www.google.com/calendar/render?action=TEMPLATE&text=%D0%9A%D0%B2%D0%B8%D0%B7%2C%20%D0%BF%D0%BB%D0%B8%D0%B7!&dates=20261128T163000Z/20261128T183000Z&location=%D0%A0%D0%B5%D1%81%D1%82%D0%BE%D0%BA%D0%BB%D1%83%D0%B1%20%D0%A1%D0%BE%D1%83%D1%81&details=%5B%D0%B2%D0%B8%D0%B4%D0%B5%D0%BE%D0%B8%D0%B3%D1%80%D1%8B%5D%20SPB%20%2314) Сб, 28 ноя. 19:30 💰700
+🍻 Соус (https://yandex.ru/maps/org/restoklub_sous/237967929499/?ll=30.177145%2C59.876791&z=11)
+
+👥 Шейкер квиз
+🟢 #ОБО ВСЁМ
+🗓 Вс, 29 ноя. 19:30 💰500
+🍻 Puberty
+"""
+
+
+class PollTests(unittest.TestCase):
+    def test_notice_becomes_readiness_question(self) -> None:
+        notices = parse_notices(SAMPLE)
+        self.assertEqual(len(notices), 2)
+        first = notices[0]
+        self.assertEqual(first.organizer, "Квиз, плиз!")
+        self.assertEqual(first.title, "[видеоигры] SPB #14")
+        self.assertEqual(first.when, "Сб, 28 ноя. 19:30")
+        self.assertEqual(first.place, "Соус")
+        self.assertEqual(first.price, "700")
+        question = poll_question(first)
+        self.assertIn("[видеоигры] SPB #14", question)
+        self.assertIn("Квиз, плиз!", question)
+        self.assertIn("Сб, 28 ноя. 19:30", question)
+        self.assertIn("Соус", question)
+        self.assertIn("700 ₽", question)
+        self.assertTrue(question.endswith("Идём?"))
+        self.assertNotIn("http", question)
+        self.assertLessEqual(len(question), 300)
+        self.assertEqual(notices[1].organizer, "Шейкер квиз")
+        self.assertEqual(notices[1].place, "Puberty")
+
+    def test_plain_lines_without_urls(self) -> None:
+        notices = parse_notices("👥 Квиз, плиз!\n🟢 Классика\n🗓 Пт, 20 ноя. 19:30\n🍻 Фасоль")
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0].price, "")
+        self.assertIn("Фасоль", poll_question(notices[0]))
 
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
