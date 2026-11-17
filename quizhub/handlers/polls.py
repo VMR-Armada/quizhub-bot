@@ -55,13 +55,13 @@ async def cmd_poll(message: Message) -> None:
     if not notices:
         if message.reply_to_message is not None or message.quote is not None:
             await message.answer(
-                "Не вижу текст этого сообщения. Перешлите объявление боту в личные сообщения "
-                "или вставьте его сразу после команды /poll."
+                "Не вижу текст этого сообщения. Ответьте командой /poll прямо в группе "
+                "или вставьте объявление сразу после команды."
             )
             return
         await message.answer(
-            "Ответьте командой /poll на объявление о квизе "
-            "или пришлите его текст сразу после команды."
+            "В группе ответьте командой /poll на объявление о квизе. "
+            "Голоса будут видны, участники смогут добавить свой вариант."
         )
         return
     await _publish(message, notices)
@@ -69,8 +69,6 @@ async def cmd_poll(message: Message) -> None:
 
 @router.message(F.forward_origin)
 async def forwarded_notice(message: Message) -> None:
-    if message.chat.type != "private":
-        raise SkipHandler()
     notices = parse_notices(_message_text(message))
     if not notices:
         raise SkipHandler()
@@ -84,39 +82,48 @@ async def _publish(message: Message, notices: list, *, reply_to: Message | None 
         if origin is not None
         else None
     )
-    anonymous = message.chat.type == "private"
     sent = 0
     for notice in notices[:_MAX_POLLS]:
         if sent > 0:
             reply = None
-        ok = await _send_poll(message, poll_question(notice), anonymous=anonymous, reply=reply)
-        if not ok:
+        error = await _send_poll(message, poll_question(notice), reply=reply)
+        if error is not None:
             if sent == 0:
-                await message.answer("Не удалось создать опрос. Проверьте, что бот может писать в этот чат.")
+                await message.answer(error)
             return
         sent += 1
     if len(notices) > _MAX_POLLS:
         await message.answer(f"Дальше в сообщении ещё {len(notices) - _MAX_POLLS}. Пришлите их отдельно.")
 
 
-async def _send_poll(message: Message, question: str, *, anonymous: bool, reply: ReplyParameters | None) -> bool:
-    attempts: list[tuple[bool, ReplyParameters | None]] = []
-    if not anonymous:
-        attempts.append((False, reply))
-    attempts.append((True, reply))
+async def _send_poll(message: Message, question: str, *, reply: ReplyParameters | None) -> str | None:
+    """Открытый опрос: голоса видны, участники могут добавить свой вариант."""
+    replies = [reply] if reply is not None else [None]
     if reply is not None:
-        attempts.append((True, None))
-    for poll_anonymous, poll_reply in attempts:
+        replies.append(None)
+    last_error = ""
+    for poll_reply in replies:
         try:
             await message.answer_poll(
                 question,
                 list(OPTIONS),
-                is_anonymous=poll_anonymous,
+                is_anonymous=False,
                 allows_multiple_answers=False,
+                allow_adding_options=True,
                 question_parse_mode=None,
                 reply_parameters=poll_reply,
             )
-            return True
-        except TelegramBadRequest:
-            continue
-    return False
+            return None
+        except TelegramBadRequest as error:
+            last_error = str(error)
+    return _poll_error_text(last_error)
+
+
+def _poll_error_text(detail: str) -> str:
+    folded = detail.casefold()
+    if "private" in folded or "anonymous" in folded:
+        return (
+            "Такой опрос можно создать в группе: там видны голоса и можно добавить свой вариант. "
+            "Ответьте в группе командой /poll на объявление о квизе."
+        )
+    return "Не удалось создать опрос. Проверьте, что бот может писать в этот чат."
