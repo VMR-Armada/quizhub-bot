@@ -15,6 +15,12 @@ def today_msk() -> date:
     return datetime.now(MSK).date()
 
 
+def week_bounds(day: date) -> tuple[date, date]:
+    """Понедельник и следующий понедельник: интервал [start, end)."""
+    start = day - timedelta(days=day.weekday())
+    return start, start + timedelta(days=7)
+
+
 def parse_stored(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%d %H:%M")
 

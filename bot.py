@@ -17,6 +17,7 @@ from quizhub.config import load_settings
 from quizhub.db import Database
 from quizhub.handlers import AppContext, setup_routers
 from quizhub.seed import delete_demo_quizzes
+from quizhub.timeutil import today_msk
 from quizhub.web import create_web_app
 
 log = logging.getLogger("quizhub")
@@ -50,6 +51,8 @@ COMMANDS = [
     BotCommand(command="table", description="Таблица расписания"),
     BotCommand(command="find", description="Найти команду или игрока"),
     BotCommand(command="poll", description="Опрос: кто идёт на квиз"),
+    BotCommand(command="add", description="Добавить опрос в список недели"),
+    BotCommand(command="week", description="Квизы этой недели и кто идёт"),
     BotCommand(command="createschedule", description="Расписание в чат на неделю"),
     BotCommand(command="stats", description="Короткая сводка"),
     BotCommand(command="help", description="Как пользоваться"),
@@ -105,11 +108,28 @@ async def main() -> None:
         raise
     log.info("Таблица: %s", settings.public_base_url)
     log.info("Бот @%s запущен", ctx.bot_username)
+    removed_polls = await database.delete_expired_polls(today_msk())
+    if removed_polls:
+        log.info("Удалены прошедшие квизы из опросов: %s", removed_polls)
+    cleanup = asyncio.create_task(_drop_finished_quizzes(database))
     try:
         await dispatcher.start_polling(bot)
     finally:
+        cleanup.cancel()
         await bot.session.close()
         await runner.cleanup()
+
+
+async def _drop_finished_quizzes(database: Database) -> None:
+    while True:
+        await asyncio.sleep(60 * 60)
+        try:
+            removed = await database.delete_expired_polls(today_msk())
+        except Exception:
+            log.exception("Не удалось удалить прошедшие квизы")
+            continue
+        if removed:
+            log.info("Удалены прошедшие квизы из опросов: %s", removed)
 
 
 if __name__ == "__main__":

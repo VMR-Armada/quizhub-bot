@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -12,10 +12,10 @@ from aiohttp.test_utils import TestClient, TestServer
 from quizhub.db import Database
 from quizhub.listing import collect
 from quizhub.live import ScheduleUnavailable, quizzes_from_payload
-from quizhub.polls import parse_notices, poll_question
+from quizhub.polls import format_week, notice_from_question, parse_notice_start, parse_notices, poll_question
 from quizhub.search import matches, parse_search
 from quizhub.seed import build_demo, seed_if_empty
-from quizhub.timeutil import today_msk
+from quizhub.timeutil import today_msk, week_bounds
 from quizhub.web import create_web_app
 
 TODAY = date(2026, 10, 14)  # среда
@@ -180,6 +180,56 @@ class PollTests(unittest.TestCase):
         self.assertEqual(notices[0].place, "Соус")
         self.assertEqual(notices[0].price, "700")
 
+    def test_notice_date_lands_on_the_announced_saturday(self) -> None:
+        moment = parse_notice_start("Сб, 28 ноя. 19:30", date(2026, 11, 23))
+        self.assertIsNotNone(moment)
+        assert moment is not None
+        self.assertEqual(moment.year, 2026)
+        self.assertEqual(moment.month, 11)
+        self.assertEqual(moment.day, 28)
+        self.assertEqual(moment.hour, 19)
+        self.assertEqual(moment.minute, 30)
+
+    def test_week_text_counts_only_people_who_are_going(self) -> None:
+        start, end = week_bounds(date(2026, 11, 23))
+        text = format_week(
+            [
+                {
+                    "starts_at": "2026-11-28 19:30",
+                    "when_text": "Сб, 28 ноя. 19:30",
+                    "title": "[видеоигры] SPB #14",
+                    "organizer": "Квиз, плиз!",
+                    "place": "Соус",
+                    "going": 5,
+                    "options": [
+                        {"text": "Иду", "count": 5},
+                        {"text": "Возможно", "count": 2},
+                        {"text": "Не иду", "count": 0},
+                        {"text": "Опоздаю", "count": 1},
+                    ],
+                }
+            ],
+            start,
+            end,
+        )
+        self.assertIn("28.11", text)
+        self.assertIn("19:30", text)
+        self.assertIn("Квиз, плиз!", text)
+        self.assertIn("Соус", text)
+        self.assertIn("Иду — 5", text)
+        self.assertIn("Возможно — 2", text)
+        self.assertIn("Не иду — 0", text)
+        self.assertIn("Опоздаю — 1", text)
+
+    def test_question_roundtrip_keeps_quiz_details(self) -> None:
+        source = parse_notices(SAMPLE)[0]
+        restored = notice_from_question(poll_question(source), date(2026, 11, 23))
+        self.assertEqual(restored.title, source.title)
+        self.assertEqual(restored.organizer, source.organizer)
+        self.assertEqual(restored.when, source.when)
+        self.assertEqual(restored.place, source.place)
+        self.assertEqual(restored.price, source.price)
+
 
 class DatabaseTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -216,6 +266,111 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(parsed.relaxed)
         self.assertTrue(found)
         self.assertTrue(all("абракадабра" not in row["title"].lower() for row in found))
+
+    async def test_week_polls_keep_only_going_votes(self) -> None:
+        start, end = week_bounds(date(2026, 11, 23))
+        await self.db.save_poll_quiz(
+            poll_id="poll-1",
+            chat_id=42,
+            organizer="Квиз, плиз!",
+            title="[видеоигры] SPB #14",
+            place="Соус",
+            starts_at="2026-11-28 19:30",
+            when_text="Сб, 28 ноя. 19:30",
+            going_option_id="going",
+        )
+        await self.db.save_poll_quiz(
+            poll_id="poll-later",
+            chat_id=42,
+            organizer="Другой",
+            title="После недели",
+            place="Бар",
+            starts_at=(end + timedelta(days=1)).strftime("%Y-%m-%d") + " 19:30",
+            when_text="позже",
+            going_option_id="going",
+        )
+        await self.db.save_poll_vote(
+            poll_id="poll-1", telegram_id=1, going=True, name="Анна", username="anna"
+        )
+        await self.db.save_poll_vote(
+            poll_id="poll-1", telegram_id=2, going=False, name="Борис", username=None
+        )
+        await self.db.save_poll_vote(
+            poll_id="poll-1", telegram_id=1, going=False, name="Анна", username="anna"
+        )
+        await self.db.save_poll_vote(
+            poll_id="poll-1", telegram_id=1, going=True, name="Анна", username="anna"
+        )
+        rows = await self.db.week_polls(42, start, end)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["title"], "[видеоигры] SPB #14")
+        self.assertEqual(rows[0]["going"], 1)
+        self.assertEqual(await self.db.poll_going_option("poll-1"), "going")
+        self.assertIsNone(await self.db.poll_going_option("missing"))
+
+    async def test_added_poll_uses_snapshot_until_new_votes(self) -> None:
+        start, end = week_bounds(date(2026, 11, 23))
+        await self.db.save_poll_quiz(
+            poll_id="poll-snap",
+            chat_id=42,
+            organizer="Квиз, плиз!",
+            title="Классика",
+            place="Соус",
+            starts_at="2026-11-28 19:30",
+            when_text="Сб, 28 ноя. 19:30",
+            going_option_id="going",
+            going_snapshot=2,
+        )
+        rows = await self.db.week_polls(42, start, end)
+        self.assertEqual(rows[0]["going"], 2)
+        await self.db.save_poll_options(
+            "poll-snap",
+            [("going", "Иду", 2), ("maybe", "Возможно", 1), ("no", "Не иду", 0)],
+            replace_counts=True,
+        )
+        await self.db.apply_option_vote("poll-snap", None, ["maybe"])
+        rows = await self.db.week_polls(42, start, end)
+        self.assertEqual(
+            [(item["text"], item["count"]) for item in rows[0]["options"]],
+            [("Иду", 2), ("Возможно", 2), ("Не иду", 0)],
+        )
+        await self.db.adjust_going_snapshot("poll-snap", None, True)
+        rows = await self.db.week_polls(42, start, end)
+        self.assertEqual(rows[0]["going"], 3)
+
+    async def test_quiz_is_removed_the_day_after_it_ends(self) -> None:
+        await self.db.save_poll_quiz(
+            poll_id="yesterday",
+            chat_id=42,
+            organizer="Квиз, плиз!",
+            title="Вчера",
+            place="Соус",
+            starts_at="2026-11-22 19:30",
+            when_text="Вс, 22 ноя. 19:30",
+            going_option_id="going",
+            going_snapshot=4,
+        )
+        await self.db.save_poll_vote(
+            poll_id="yesterday", telegram_id=1, going=True, name="Анна", username=None
+        )
+        await self.db.save_poll_quiz(
+            poll_id="today",
+            chat_id=42,
+            organizer="Квиз, плиз!",
+            title="Сегодня",
+            place="Соус",
+            starts_at="2026-11-23 19:30",
+            when_text="Пн, 23 ноя. 19:30",
+            going_option_id="going",
+        )
+        removed = await self.db.delete_expired_polls(date(2026, 11, 23))
+        self.assertEqual(removed, 1)
+        self.assertIsNone(await self.db.poll_quiz("yesterday"))
+        self.assertIsNone(await self.db.poll_vote_going("yesterday", 1))
+        kept = await self.db.poll_quiz("today")
+        self.assertIsNotNone(kept)
+        assert kept is not None
+        self.assertEqual(kept["title"], "Сегодня")
 
     async def test_team_post_and_personal_filter(self) -> None:
         _, _, found = await collect(

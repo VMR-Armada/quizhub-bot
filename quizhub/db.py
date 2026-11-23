@@ -117,9 +117,46 @@ class Database:
                     quiz_ids TEXT NOT NULL,
                     page INTEGER NOT NULL DEFAULT 0
                 );
+
+                CREATE TABLE IF NOT EXISTS poll_quizzes (
+                    poll_id TEXT PRIMARY KEY,
+                    chat_id INTEGER NOT NULL,
+                    organizer TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    place TEXT NOT NULL DEFAULT '',
+                    starts_at TEXT,
+                    when_text TEXT NOT NULL DEFAULT '',
+                    going_option_id TEXT NOT NULL DEFAULT '',
+                    going_snapshot INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_poll_quizzes_chat_time
+                    ON poll_quizzes (chat_id, starts_at);
+
+                CREATE TABLE IF NOT EXISTS poll_votes (
+                    poll_id TEXT NOT NULL,
+                    telegram_id INTEGER NOT NULL,
+                    going INTEGER NOT NULL DEFAULT 0,
+                    option_ids TEXT NOT NULL DEFAULT '[]',
+                    name TEXT NOT NULL DEFAULT '',
+                    username TEXT,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (poll_id, telegram_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS poll_options (
+                    poll_id TEXT NOT NULL,
+                    option_id TEXT NOT NULL,
+                    text TEXT NOT NULL,
+                    position INTEGER NOT NULL DEFAULT 0,
+                    voter_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (poll_id, option_id)
+                );
                 """
             )
             await self._ensure_cities(db)
+            await self._ensure_poll_columns(db)
 
     async def _ensure_cities(self, db: aiosqlite.Connection) -> None:
         cities = [
@@ -133,6 +170,18 @@ class Database:
             "INSERT OR IGNORE INTO cities (code, name) VALUES (?, ?)",
             cities,
         )
+
+    async def _ensure_poll_columns(self, db: aiosqlite.Connection) -> None:
+        cursor = await db.execute("PRAGMA table_info(poll_quizzes)")
+        names = {row["name"] for row in await cursor.fetchall()}
+        if "going_snapshot" not in names:
+            await db.execute(
+                "ALTER TABLE poll_quizzes ADD COLUMN going_snapshot INTEGER NOT NULL DEFAULT 0"
+            )
+        cursor = await db.execute("PRAGMA table_info(poll_votes)")
+        vote_columns = {row["name"] for row in await cursor.fetchall()}
+        if "option_ids" not in vote_columns:
+            await db.execute("ALTER TABLE poll_votes ADD COLUMN option_ids TEXT NOT NULL DEFAULT '[]'")
 
     async def cities(self) -> list[dict]:
         async with self.connect() as db:
@@ -485,6 +534,327 @@ class Database:
                 """,
                 (chat_id, city_code, owner_id, message_id, now),
             )
+
+    async def save_poll_quiz(
+        self,
+        *,
+        poll_id: str,
+        chat_id: int,
+        organizer: str,
+        title: str,
+        place: str,
+        starts_at: str | None,
+        when_text: str,
+        going_option_id: str,
+        going_snapshot: int = 0,
+    ) -> None:
+        now = format_stored(datetime.now())
+        async with self.connect() as db:
+            await db.execute(
+                """
+                INSERT INTO poll_quizzes (
+                    poll_id, chat_id, organizer, title, place, starts_at,
+                    when_text, going_option_id, going_snapshot, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(poll_id) DO UPDATE SET
+                    chat_id = excluded.chat_id,
+                    organizer = excluded.organizer,
+                    title = excluded.title,
+                    place = excluded.place,
+                    starts_at = excluded.starts_at,
+                    when_text = excluded.when_text,
+                    going_option_id = excluded.going_option_id,
+                    going_snapshot = excluded.going_snapshot
+                """,
+                (
+                    poll_id,
+                    chat_id,
+                    organizer,
+                    title,
+                    place,
+                    starts_at,
+                    when_text,
+                    going_option_id,
+                    max(0, going_snapshot),
+                    now,
+                ),
+            )
+
+    async def poll_quiz(self, poll_id: str) -> dict | None:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                "SELECT * FROM poll_quizzes WHERE poll_id = ?",
+                (poll_id,),
+            )
+            row = await cursor.fetchone()
+            return None if row is None else dict(row)
+
+    async def shown_going(self, poll_id: str) -> int:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT CASE
+                    WHEN q.going_snapshot > 0 THEN q.going_snapshot
+                    ELSE (
+                        SELECT COUNT(*) FROM poll_votes v
+                        WHERE v.poll_id = q.poll_id AND v.going = 1
+                    )
+                END AS going
+                FROM poll_quizzes q
+                WHERE q.poll_id = ?
+                """,
+                (poll_id,),
+            )
+            row = await cursor.fetchone()
+            return 0 if row is None else int(row["going"])
+
+    async def set_poll_snapshot(self, poll_id: str, going_option_id: str, going_snapshot: int) -> None:
+        async with self.connect() as db:
+            await db.execute(
+                """
+                UPDATE poll_quizzes
+                SET going_option_id = ?, going_snapshot = ?
+                WHERE poll_id = ?
+                """,
+                (going_option_id, max(0, going_snapshot), poll_id),
+            )
+
+    async def poll_vote_going(self, poll_id: str, telegram_id: int) -> bool | None:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                "SELECT going FROM poll_votes WHERE poll_id = ? AND telegram_id = ?",
+                (poll_id, telegram_id),
+            )
+            row = await cursor.fetchone()
+            return None if row is None else bool(row["going"])
+
+    async def adjust_going_snapshot(self, poll_id: str, previous: bool | None, going: bool) -> None:
+        """Двигаёт снимок «Иду», если опрос добавили уже с голосами."""
+        async with self.connect() as db:
+            cursor = await db.execute(
+                "SELECT going_snapshot FROM poll_quizzes WHERE poll_id = ?",
+                (poll_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None or int(row["going_snapshot"]) <= 0:
+                return
+            delta = (1 if going else 0) if previous is None else int(going) - int(previous)
+            if not delta:
+                return
+            await db.execute(
+                """
+                UPDATE poll_quizzes
+                SET going_snapshot = MAX(0, going_snapshot + ?)
+                WHERE poll_id = ?
+                """,
+                (delta, poll_id),
+            )
+
+    async def delete_expired_polls(self, today: date) -> int:
+        """Удаляет квиз на следующий день после даты проведения."""
+        async with self.connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT poll_id FROM poll_quizzes
+                WHERE starts_at IS NOT NULL AND substr(starts_at, 1, 10) < ?
+                """,
+                (today.isoformat(),),
+            )
+            ids = [str(row["poll_id"]) for row in await cursor.fetchall()]
+            if not ids:
+                return 0
+            marks = ",".join("?" * len(ids))
+            await db.execute(f"DELETE FROM poll_votes WHERE poll_id IN ({marks})", ids)
+            await db.execute(f"DELETE FROM poll_options WHERE poll_id IN ({marks})", ids)
+            await db.execute(f"DELETE FROM poll_quizzes WHERE poll_id IN ({marks})", ids)
+            return len(ids)
+
+    async def poll_going_option(self, poll_id: str) -> str | None:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                "SELECT going_option_id FROM poll_quizzes WHERE poll_id = ?",
+                (poll_id,),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            return str(row["going_option_id"])
+
+    async def save_poll_options(
+        self,
+        poll_id: str,
+        options: list[tuple[str, str, int]],
+        *,
+        replace_counts: bool,
+    ) -> None:
+        async with self.connect() as db:
+            for position, (option_id, text, voter_count) in enumerate(options):
+                if not option_id:
+                    continue
+                if replace_counts:
+                    await db.execute(
+                        """
+                        INSERT INTO poll_options (poll_id, option_id, text, position, voter_count)
+                        VALUES (?, ?, ?, ?, ?)
+                        ON CONFLICT(poll_id, option_id) DO UPDATE SET
+                            text = excluded.text,
+                            position = excluded.position,
+                            voter_count = excluded.voter_count
+                        """,
+                        (poll_id, option_id, text, position, max(0, voter_count)),
+                    )
+                else:
+                    await db.execute(
+                        """
+                        INSERT INTO poll_options (poll_id, option_id, text, position, voter_count)
+                        VALUES (?, ?, ?, ?, 0)
+                        ON CONFLICT(poll_id, option_id) DO UPDATE SET
+                            text = excluded.text,
+                            position = excluded.position
+                        """,
+                        (poll_id, option_id, text, position),
+                    )
+            if not replace_counts:
+                return
+            ids = [option_id for option_id, _, _ in options if option_id]
+            if not ids:
+                return
+            marks = ",".join("?" * len(ids))
+            await db.execute(
+                f"DELETE FROM poll_options WHERE poll_id = ? AND option_id NOT IN ({marks})",
+                (poll_id, *ids),
+            )
+
+    async def poll_vote_options(self, poll_id: str, telegram_id: int) -> list[str] | None:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                "SELECT option_ids FROM poll_votes WHERE poll_id = ? AND telegram_id = ?",
+                (poll_id, telegram_id),
+            )
+            row = await cursor.fetchone()
+            if row is None:
+                return None
+            try:
+                chosen = json.loads(row["option_ids"] or "[]")
+            except json.JSONDecodeError:
+                return []
+            return [str(item) for item in chosen] if isinstance(chosen, list) else []
+
+    async def apply_option_vote(self, poll_id: str, previous: list[str] | None, chosen: list[str]) -> None:
+        old = previous or []
+        removed = [option_id for option_id in old if option_id not in chosen]
+        added = [option_id for option_id in chosen if option_id not in old]
+        if not removed and not added:
+            return
+        async with self.connect() as db:
+            for option_id in added:
+                await db.execute(
+                    """
+                    INSERT INTO poll_options (poll_id, option_id, text, position, voter_count)
+                    VALUES (?, ?, 'Свой вариант', 1000, 0)
+                    ON CONFLICT(poll_id, option_id) DO NOTHING
+                    """,
+                    (poll_id, option_id),
+                )
+                await db.execute(
+                    """
+                    UPDATE poll_options
+                    SET voter_count = voter_count + 1
+                    WHERE poll_id = ? AND option_id = ?
+                    """,
+                    (poll_id, option_id),
+                )
+            for option_id in removed:
+                await db.execute(
+                    """
+                    UPDATE poll_options
+                    SET voter_count = MAX(0, voter_count - 1)
+                    WHERE poll_id = ? AND option_id = ?
+                    """,
+                    (poll_id, option_id),
+                )
+
+    async def save_poll_vote(
+        self,
+        *,
+        poll_id: str,
+        telegram_id: int,
+        going: bool,
+        name: str,
+        username: str | None,
+        option_ids: list[str] | None = None,
+    ) -> None:
+        now = format_stored(datetime.now())
+        async with self.connect() as db:
+            await db.execute(
+                """
+                INSERT INTO poll_votes (
+                    poll_id, telegram_id, going, option_ids, name, username, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(poll_id, telegram_id) DO UPDATE SET
+                    going = excluded.going,
+                    option_ids = excluded.option_ids,
+                    name = excluded.name,
+                    username = excluded.username,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    poll_id,
+                    telegram_id,
+                    1 if going else 0,
+                    json.dumps(option_ids or []),
+                    name,
+                    username,
+                    now,
+                ),
+            )
+
+    async def week_polls(self, chat_id: int, start: date, end: date) -> list[dict]:
+        begin = format_stored(datetime.combine(start, datetime.min.time()))
+        until = format_stored(datetime.combine(end, datetime.min.time()))
+        async with self.connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT q.poll_id, q.organizer, q.title, q.place, q.starts_at, q.when_text,
+                    CASE
+                        WHEN q.going_snapshot > 0 THEN q.going_snapshot
+                        ELSE (
+                            SELECT COUNT(*) FROM poll_votes v
+                            WHERE v.poll_id = q.poll_id AND v.going = 1
+                        )
+                    END AS going
+                FROM poll_quizzes q
+                WHERE q.chat_id = ? AND q.starts_at >= ? AND q.starts_at < ?
+                ORDER BY q.starts_at, q.organizer, q.title
+                """,
+                (chat_id, begin, until),
+            )
+            rows = [dict(row) for row in await cursor.fetchall()]
+            await self._attach_option_results(db, rows)
+            return rows
+
+    async def _attach_option_results(self, db: aiosqlite.Connection, rows: list[dict]) -> None:
+        if not rows:
+            return
+        ids = [row["poll_id"] for row in rows]
+        marks = ",".join("?" * len(ids))
+        cursor = await db.execute(
+            f"""
+            SELECT poll_id, text, voter_count
+            FROM poll_options
+            WHERE poll_id IN ({marks})
+            ORDER BY position, text
+            """,
+            ids,
+        )
+        grouped: dict[str, list[dict]] = {}
+        for option in await cursor.fetchall():
+            grouped.setdefault(str(option["poll_id"]), []).append(
+                {"text": option["text"], "count": int(option["voter_count"])}
+            )
+        for row in rows:
+            row["options"] = grouped.get(str(row["poll_id"]), [])
 
     async def chat_schedule(self, chat_id: int) -> dict | None:
         async with self.connect() as db:
