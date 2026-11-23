@@ -92,8 +92,12 @@ async def cmd_add(message: Message, db: Database) -> None:
     await db.delete_expired_polls(today_msk())
     poll = _selected_poll(message)
     if poll is None:
+        stored = await _stored_reply_quiz(message, db)
+        if stored is None:
+            await message.answer(_poll_not_visible_text(message))
+            return
         await message.answer(
-            "Ответьте командой /add на опрос, который нужно добавить в список недели."
+            _added_text(stored, True, await db.shown_going(stored["poll_id"]))
         )
         return
     today = today_msk()
@@ -106,6 +110,7 @@ async def cmd_add(message: Message, db: Database) -> None:
         )
         return
     going_option_id, going_count = _going_choice(poll)
+    replied_id = _replied_message_id(message)
     existed = await db.poll_quiz(poll.id)
     if existed is None:
         await db.save_poll_quiz(
@@ -118,9 +123,23 @@ async def cmd_add(message: Message, db: Database) -> None:
             when_text=notice.when,
             going_option_id=going_option_id,
             going_snapshot=going_count,
+            message_id=replied_id,
         )
     else:
         await db.set_poll_snapshot(poll.id, going_option_id or existed["going_option_id"], going_count)
+        if replied_id is not None:
+            await db.save_poll_quiz(
+                poll_id=poll.id,
+                chat_id=message.chat.id,
+                organizer=existed["organizer"],
+                title=existed["title"],
+                place=existed["place"],
+                starts_at=existed["starts_at"],
+                when_text=existed["when_text"],
+                going_option_id=going_option_id or existed["going_option_id"],
+                going_snapshot=going_count,
+                message_id=replied_id,
+            )
     await db.save_poll_options(poll.id, _poll_option_rows(poll), replace_counts=True)
     await message.answer(
         _added_text(await db.poll_quiz(poll.id), existed is not None, await db.shown_going(poll.id))
@@ -185,7 +204,7 @@ async def _publish(
             reply = None
         sent, error = await _send_poll(message, poll_question(notice), reply=reply)
         if sent is not None and sent.poll is not None:
-            await _remember_poll(db, message.chat.id, notice, sent.poll)
+            await _remember_poll(db, message.chat.id, notice, sent.poll, sent.message_id)
         if error is not None:
             if count == 0:
                 await message.answer(error)
@@ -195,7 +214,7 @@ async def _publish(
         await message.answer(f"Дальше в сообщении ещё {len(notices) - _MAX_POLLS}. Пришлите их отдельно.")
 
 
-async def _remember_poll(db: Database, chat_id: int, notice, poll) -> None:
+async def _remember_poll(db: Database, chat_id: int, notice, poll, message_id: int | None) -> None:
     going_option_id = ""
     for option in poll.options:
         if option.text == OPTIONS[0]:
@@ -211,6 +230,7 @@ async def _remember_poll(db: Database, chat_id: int, notice, poll) -> None:
         starts_at=starts.strftime("%Y-%m-%d %H:%M") if starts else None,
         when_text=notice.when,
         going_option_id=going_option_id,
+        message_id=message_id,
     )
     await db.save_poll_options(poll.id, _poll_option_rows(poll), replace_counts=True)
 
@@ -239,10 +259,55 @@ async def _send_poll(message: Message, question: str, *, reply: ReplyParameters 
 
 
 def _selected_poll(message: Message):
+    sources = [message.reply_to_message, message.external_reply, message]
+    for source in sources:
+        poll = getattr(source, "poll", None)
+        if poll is not None:
+            return poll
+    return None
+
+
+def _replied_message_id(message: Message) -> int | None:
     origin = message.reply_to_message
-    if origin is not None and origin.poll is not None:
-        return origin.poll
-    return message.poll
+    if origin is not None and getattr(origin, "poll", None) is not None:
+        return origin.message_id
+    external = message.external_reply
+    if (
+        external is not None
+        and external.poll is not None
+        and external.message_id is not None
+        and (external.chat is None or external.chat.id == message.chat.id)
+    ):
+        return external.message_id
+    if origin is not None:
+        return origin.message_id
+    return None
+
+
+async def _stored_reply_quiz(message: Message, db: Database) -> dict | None:
+    origin = message.reply_to_message
+    if origin is not None:
+        found = await db.poll_quiz_by_message(message.chat.id, origin.message_id)
+        if found is not None:
+            return found
+    external = message.external_reply
+    if external is None or external.message_id is None:
+        return None
+    chat_id = external.chat.id if external.chat is not None else message.chat.id
+    return await db.poll_quiz_by_message(chat_id, external.message_id)
+
+
+def _poll_not_visible_text(message: Message) -> str:
+    if message.reply_to_message is None and message.external_reply is None:
+        return (
+            "Не вижу, на какое сообщение вы ответили. "
+            "Нажмите «Ответить» на сам опрос и отправьте /add."
+        )
+    return (
+        "Ответ вижу, но Telegram не передал содержимое опроса. "
+        "В группе так бывает, если у бота включена приватность, а опрос отправили не этот бот. "
+        "Ответьте /add на опрос, который создал бот, или назначьте бота администратором группы."
+    )
 
 
 def _poll_option_rows(poll) -> list[tuple[str, str, int]]:

@@ -305,6 +305,22 @@ class DatabaseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["title"], "[видеоигры] SPB #14")
         self.assertEqual(rows[0]["going"], 1)
+        await self.db.save_poll_quiz(
+            poll_id="poll-1",
+            chat_id=42,
+            organizer="Квиз, плиз!",
+            title="[видеоигры] SPB #14",
+            place="Соус",
+            starts_at="2026-11-28 19:30",
+            when_text="Сб, 28 ноя. 19:30",
+            going_option_id="going",
+            message_id=77,
+        )
+        found = await self.db.poll_quiz_by_message(42, 77)
+        self.assertIsNotNone(found)
+        assert found is not None
+        self.assertEqual(found["poll_id"], "poll-1")
+        self.assertIsNone(await self.db.poll_quiz_by_message(42, 78))
         self.assertEqual(await self.db.poll_going_option("poll-1"), "going")
         self.assertIsNone(await self.db.poll_going_option("missing"))
 

@@ -128,6 +128,7 @@ class Database:
                     when_text TEXT NOT NULL DEFAULT '',
                     going_option_id TEXT NOT NULL DEFAULT '',
                     going_snapshot INTEGER NOT NULL DEFAULT 0,
+                    message_id INTEGER,
                     created_at TEXT NOT NULL
                 );
 
@@ -182,6 +183,8 @@ class Database:
         vote_columns = {row["name"] for row in await cursor.fetchall()}
         if "option_ids" not in vote_columns:
             await db.execute("ALTER TABLE poll_votes ADD COLUMN option_ids TEXT NOT NULL DEFAULT '[]'")
+        if "message_id" not in names:
+            await db.execute("ALTER TABLE poll_quizzes ADD COLUMN message_id INTEGER")
 
     async def cities(self) -> list[dict]:
         async with self.connect() as db:
@@ -547,6 +550,7 @@ class Database:
         when_text: str,
         going_option_id: str,
         going_snapshot: int = 0,
+        message_id: int | None = None,
     ) -> None:
         now = format_stored(datetime.now())
         async with self.connect() as db:
@@ -554,8 +558,8 @@ class Database:
                 """
                 INSERT INTO poll_quizzes (
                     poll_id, chat_id, organizer, title, place, starts_at,
-                    when_text, going_option_id, going_snapshot, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    when_text, going_option_id, going_snapshot, message_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(poll_id) DO UPDATE SET
                     chat_id = excluded.chat_id,
                     organizer = excluded.organizer,
@@ -564,7 +568,8 @@ class Database:
                     starts_at = excluded.starts_at,
                     when_text = excluded.when_text,
                     going_option_id = excluded.going_option_id,
-                    going_snapshot = excluded.going_snapshot
+                    going_snapshot = excluded.going_snapshot,
+                    message_id = COALESCE(excluded.message_id, poll_quizzes.message_id)
                 """,
                 (
                     poll_id,
@@ -576,9 +581,22 @@ class Database:
                     when_text,
                     going_option_id,
                     max(0, going_snapshot),
+                    message_id,
                     now,
                 ),
             )
+
+    async def poll_quiz_by_message(self, chat_id: int, message_id: int) -> dict | None:
+        async with self.connect() as db:
+            cursor = await db.execute(
+                """
+                SELECT * FROM poll_quizzes
+                WHERE chat_id = ? AND message_id = ?
+                """,
+                (chat_id, message_id),
+            )
+            row = await cursor.fetchone()
+            return None if row is None else dict(row)
 
     async def poll_quiz(self, poll_id: str) -> dict | None:
         async with self.connect() as db:
